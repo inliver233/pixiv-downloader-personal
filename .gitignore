@@ -14,6 +14,7 @@ venv.bak/
 # Runtime data (keep local; don't commit)
 download/**
 Images/*
+_preview/
 pixivutil.log*
 *.log
 *.log.*

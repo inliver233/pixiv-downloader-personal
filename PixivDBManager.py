@@ -31,7 +31,17 @@ class PixivDBManager(object):
         else:
             PixivHelper.print_and_log("info", "Using custom DB Path: " + target)
         self.rootDirectory = root_directory
+        # WAL mode allows concurrent reads while a long-running indexing job is writing.
+        # This matters for the Web UI (Flask) which polls stats while the CLI is syncing.
         self.conn = sqlite3.connect(target, timeout)
+        try:
+            self.conn.execute("PRAGMA journal_mode=WAL;")
+            self.conn.execute("PRAGMA synchronous=NORMAL;")
+            # Keep UI/API requests responsive when the DB is busy.
+            self.conn.execute("PRAGMA busy_timeout=5000;")
+        except BaseException:
+            # Some environments/filesystems might not support WAL; keep working with defaults.
+            pass
 
     def close(self):
         self.conn.close()
@@ -192,6 +202,9 @@ class PixivDBManager(object):
 
             # Novel
             self.create_update_novel_table(c)
+
+            # Follow URL index (personal workflow)
+            self.create_update_follow_index_table(c)
             self.conn.commit()
 
             print("done.")
@@ -226,6 +239,12 @@ class PixivDBManager(object):
 
             c.execute("""DROP TABLE IF EXISTS sketch_master_post""")
             c.execute("""DROP TABLE IF EXISTS sketch_post_image""")
+            self.conn.commit()
+
+            # Follow URL index (personal workflow)
+            c.execute("""DROP TABLE IF EXISTS pixiv_follow_image_url""")
+            c.execute("""DROP TABLE IF EXISTS pixiv_follow_image""")
+            c.execute("""DROP TABLE IF EXISTS pixiv_follow_member""")
             self.conn.commit()
 
         except BaseException:
@@ -1844,6 +1863,501 @@ class PixivDBManager(object):
     ##########################################
     # VIII. CRUD Novel table                 #
     ##########################################
+    def create_update_follow_index_table(self, c):
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS pixiv_follow_member (
+                        member_id INTEGER PRIMARY KEY,
+                        name TEXT,
+                        member_token TEXT,
+                        avatar_url TEXT,
+                        background_url TEXT,
+                        created_date DATE,
+                        last_sync_date DATE
+                        )"""
+        )
+
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS pixiv_follow_image (
+                        image_id INTEGER PRIMARY KEY,
+                        member_id INTEGER,
+                        title TEXT,
+                        caption TEXT,
+                        create_date TEXT,
+                        page_count INTEGER,
+                        mode TEXT,
+                        bookmark_count INTEGER,
+                        like_count INTEGER,
+                        view_count INTEGER,
+                        created_date DATE,
+                        last_update_date DATE
+                        )"""
+        )
+
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS pixiv_follow_image_url (
+                        image_id INTEGER,
+                        page_index INTEGER,
+                        original_url TEXT,
+                        regular_url TEXT,
+                        created_date DATE,
+                        last_update_date DATE,
+                        PRIMARY KEY (image_id, page_index)
+                        )"""
+        )
+
+        c.execute(
+            """CREATE INDEX IF NOT EXISTS idx_pixiv_follow_image_member_id
+                        ON pixiv_follow_image (member_id)"""
+        )
+        c.execute(
+            """CREATE INDEX IF NOT EXISTS idx_pixiv_follow_image_url_image_id
+                        ON pixiv_follow_image_url (image_id)"""
+        )
+
+    def upsertFollowMember(
+        self,
+        member_id,
+        name=None,
+        member_token=None,
+        avatar_url=None,
+        background_url=None,
+    ):
+        try:
+            c = self.conn.cursor()
+            member_id = int(member_id)
+            c.execute(
+                """INSERT INTO pixiv_follow_member (
+                        member_id, name, member_token, avatar_url, background_url, created_date, last_sync_date
+                    ) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                    ON CONFLICT(member_id) DO UPDATE SET
+                        name = COALESCE(excluded.name, name),
+                        member_token = COALESCE(excluded.member_token, member_token),
+                        avatar_url = COALESCE(excluded.avatar_url, avatar_url),
+                        background_url = COALESCE(excluded.background_url, background_url),
+                        last_sync_date = datetime('now')""",
+                (member_id, name, member_token, avatar_url, background_url),
+            )
+            self.conn.commit()
+        except BaseException:
+            print("Error at upsertFollowMember():", str(sys.exc_info()))
+            print("failed")
+            raise
+        finally:
+            c.close()
+
+    def selectFollowMemberIds(self):
+        try:
+            c = self.conn.cursor()
+            c.execute("""SELECT member_id FROM pixiv_follow_member ORDER BY member_id""")
+            return [int(row[0]) for row in c.fetchall()]
+        except BaseException:
+            print("Error at selectFollowMemberIds():", str(sys.exc_info()))
+            print("failed")
+            raise
+        finally:
+            c.close()
+
+    def selectFollowMembers(self, query=None, offset=0, limit=50):
+        try:
+            c = self.conn.cursor()
+            where = ""
+            params = []
+            if query:
+                where = "WHERE name LIKE ? OR member_token LIKE ? OR CAST(member_id AS TEXT) LIKE ?"
+                q = f"%{query}%"
+                params.extend([q, q, q])
+            params.extend([int(limit), int(offset)])
+            c.execute(
+                f"""SELECT member_id, name, member_token, avatar_url, background_url, created_date, last_sync_date
+                     FROM pixiv_follow_member
+                     {where}
+                     ORDER BY last_sync_date DESC, member_id ASC
+                     LIMIT ? OFFSET ?""",
+                tuple(params),
+            )
+            return c.fetchall()
+        except BaseException:
+            print("Error at selectFollowMembers():", str(sys.exc_info()))
+            print("failed")
+            raise
+        finally:
+            c.close()
+
+    def selectFollowMembersSummary(self, query=None, offset=0, limit=50):
+        try:
+            c = self.conn.cursor()
+            where = ""
+            params = []
+            if query:
+                where = "WHERE m.name LIKE ? OR m.member_token LIKE ? OR CAST(m.member_id AS TEXT) LIKE ?"
+                q = f"%{query}%"
+                params.extend([q, q, q])
+            params.extend([int(limit), int(offset)])
+            c.execute(
+                f"""SELECT
+                        m.member_id,
+                        m.name,
+                        m.member_token,
+                        m.avatar_url,
+                        m.background_url,
+                        m.created_date,
+                        m.last_sync_date,
+                        COALESCE(img.image_count, 0) AS image_count,
+                        COALESCE(u.url_count, 0) AS url_count
+                     FROM pixiv_follow_member m
+                     LEFT JOIN (
+                        SELECT member_id, COUNT(*) AS image_count
+                          FROM pixiv_follow_image
+                         GROUP BY member_id
+                     ) img ON img.member_id = m.member_id
+                     LEFT JOIN (
+                        SELECT fi.member_id AS member_id, COUNT(*) AS url_count
+                          FROM pixiv_follow_image_url fu
+                          JOIN pixiv_follow_image fi ON fi.image_id = fu.image_id
+                         GROUP BY fi.member_id
+                     ) u ON u.member_id = m.member_id
+                     {where}
+                     ORDER BY m.last_sync_date DESC, m.member_id ASC
+                     LIMIT ? OFFSET ?""",
+                tuple(params),
+            )
+            return c.fetchall()
+        except BaseException:
+            print("Error at selectFollowMembersSummary():", str(sys.exc_info()))
+            print("failed")
+            raise
+        finally:
+            c.close()
+
+    def selectFollowMemberSummaryById(self, member_id):
+        try:
+            c = self.conn.cursor()
+            c.execute(
+                """SELECT
+                        m.member_id,
+                        m.name,
+                        m.member_token,
+                        m.avatar_url,
+                        m.background_url,
+                        m.created_date,
+                        m.last_sync_date,
+                        COALESCE(img.image_count, 0) AS image_count,
+                        COALESCE(u.url_count, 0) AS url_count
+                     FROM pixiv_follow_member m
+                     LEFT JOIN (
+                        SELECT member_id, COUNT(*) AS image_count
+                          FROM pixiv_follow_image
+                         GROUP BY member_id
+                     ) img ON img.member_id = m.member_id
+                     LEFT JOIN (
+                        SELECT fi.member_id AS member_id, COUNT(*) AS url_count
+                          FROM pixiv_follow_image_url fu
+                          JOIN pixiv_follow_image fi ON fi.image_id = fu.image_id
+                         GROUP BY fi.member_id
+                     ) u ON u.member_id = m.member_id
+                     WHERE m.member_id = ?""",
+                (int(member_id),),
+            )
+            return c.fetchone()
+        except BaseException:
+            print("Error at selectFollowMemberSummaryById():", str(sys.exc_info()))
+            print("failed")
+            raise
+        finally:
+            c.close()
+
+    def countFollowMembers(self, query=None):
+        try:
+            c = self.conn.cursor()
+            if query:
+                q = f"%{query}%"
+                c.execute(
+                    """SELECT COUNT(*) FROM pixiv_follow_member
+                         WHERE name LIKE ? OR member_token LIKE ? OR CAST(member_id AS TEXT) LIKE ?""",
+                    (q, q, q),
+                )
+            else:
+                c.execute("""SELECT COUNT(*) FROM pixiv_follow_member""")
+            row = c.fetchone()
+            return int(row[0]) if row else 0
+        except BaseException:
+            print("Error at countFollowMembers():", str(sys.exc_info()))
+            print("failed")
+            raise
+        finally:
+            c.close()
+
+    def selectFollowImageIdsByMember(self, member_id):
+        try:
+            c = self.conn.cursor()
+            c.execute(
+                """SELECT image_id FROM pixiv_follow_image WHERE member_id = ? ORDER BY image_id DESC""",
+                (int(member_id),),
+            )
+            return [int(row[0]) for row in c.fetchall()]
+        except BaseException:
+            print("Error at selectFollowImageIdsByMember():", str(sys.exc_info()))
+            print("failed")
+            raise
+        finally:
+            c.close()
+
+    def selectFollowImageIdsNeedingUrlIndex(self, member_id):
+        """
+        Return image_ids for a member that are missing URL rows, or have fewer URL rows than page_count.
+
+        This is used to resume partially-indexed artists (e.g. if the process was interrupted after
+        inserting pixiv_follow_image rows but before pixiv_follow_image_url rows).
+        """
+        try:
+            c = self.conn.cursor()
+            c.execute(
+                """SELECT fi.image_id
+                     FROM pixiv_follow_image fi
+                     LEFT JOIN (
+                        SELECT image_id, COUNT(*) AS url_count
+                          FROM pixiv_follow_image_url
+                         GROUP BY image_id
+                     ) fu ON fu.image_id = fi.image_id
+                    WHERE fi.member_id = ?
+                      AND (
+                        fu.url_count IS NULL
+                        OR (
+                          fi.page_count IS NOT NULL
+                          AND fi.page_count > 0
+                          AND fu.url_count < fi.page_count
+                        )
+                      )
+                    ORDER BY fi.image_id DESC""",
+                (int(member_id),),
+            )
+            return [int(row[0]) for row in c.fetchall()]
+        except BaseException:
+            print("Error at selectFollowImageIdsNeedingUrlIndex():", str(sys.exc_info()))
+            print("failed")
+            raise
+        finally:
+            c.close()
+
+    def upsertFollowImage(
+        self,
+        image_id,
+        member_id,
+        title=None,
+        caption=None,
+        create_date=None,
+        page_count=None,
+        mode=None,
+        bookmark_count=None,
+        like_count=None,
+        view_count=None,
+    ):
+        try:
+            c = self.conn.cursor()
+            c.execute(
+                """INSERT INTO pixiv_follow_image (
+                        image_id, member_id, title, caption, create_date, page_count, mode,
+                        bookmark_count, like_count, view_count, created_date, last_update_date
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                    ON CONFLICT(image_id) DO UPDATE SET
+                        member_id = excluded.member_id,
+                        title = COALESCE(excluded.title, title),
+                        caption = COALESCE(excluded.caption, caption),
+                        create_date = COALESCE(excluded.create_date, create_date),
+                        page_count = COALESCE(excluded.page_count, page_count),
+                        mode = COALESCE(excluded.mode, mode),
+                        bookmark_count = COALESCE(excluded.bookmark_count, bookmark_count),
+                        like_count = COALESCE(excluded.like_count, like_count),
+                        view_count = COALESCE(excluded.view_count, view_count),
+                        last_update_date = datetime('now')""",
+                (
+                    int(image_id),
+                    int(member_id),
+                    title,
+                    caption,
+                    create_date,
+                    page_count,
+                    mode,
+                    bookmark_count,
+                    like_count,
+                    view_count,
+                ),
+            )
+            self.conn.commit()
+        except BaseException:
+            print("Error at upsertFollowImage():", str(sys.exc_info()))
+            print("failed")
+            raise
+        finally:
+            c.close()
+
+    def upsertFollowImageUrls(self, image_id, url_rows):
+        """
+        Upsert URL rows for an image.
+        url_rows: Iterable[(image_id, page_index, original_url, regular_url)]
+        """
+        try:
+            c = self.conn.cursor()
+            c.executemany(
+                """INSERT INTO pixiv_follow_image_url (
+                        image_id, page_index, original_url, regular_url, created_date, last_update_date
+                    ) VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
+                    ON CONFLICT(image_id, page_index) DO UPDATE SET
+                        original_url = excluded.original_url,
+                        regular_url = excluded.regular_url,
+                        last_update_date = datetime('now')""",
+                url_rows,
+            )
+            self.conn.commit()
+        except BaseException:
+            print("Error at upsertFollowImageUrls():", str(sys.exc_info()))
+            print("failed")
+            raise
+        finally:
+            c.close()
+
+    def selectFollowImages(self, member_id, offset=0, limit=50):
+        try:
+            c = self.conn.cursor()
+            c.execute(
+                """SELECT image_id, title, create_date, page_count, mode, bookmark_count, like_count, view_count
+                     FROM pixiv_follow_image
+                     WHERE member_id = ?
+                     ORDER BY image_id DESC
+                     LIMIT ? OFFSET ?""",
+                (int(member_id), int(limit), int(offset)),
+            )
+            return c.fetchall()
+        except BaseException:
+            print("Error at selectFollowImages():", str(sys.exc_info()))
+            print("failed")
+            raise
+        finally:
+            c.close()
+
+    def countFollowImages(self, member_id):
+        try:
+            c = self.conn.cursor()
+            c.execute(
+                """SELECT COUNT(*) FROM pixiv_follow_image WHERE member_id = ?""",
+                (int(member_id),),
+            )
+            row = c.fetchone()
+            return int(row[0]) if row else 0
+        except BaseException:
+            print("Error at countFollowImages():", str(sys.exc_info()))
+            print("failed")
+            raise
+        finally:
+            c.close()
+
+    def countFollowImagesAll(self):
+        try:
+            c = self.conn.cursor()
+            c.execute("""SELECT COUNT(*) FROM pixiv_follow_image""")
+            row = c.fetchone()
+            return int(row[0]) if row else 0
+        except BaseException:
+            print("Error at countFollowImagesAll():", str(sys.exc_info()))
+            print("failed")
+            raise
+        finally:
+            c.close()
+
+    def countFollowImageUrlsAll(self):
+        try:
+            c = self.conn.cursor()
+            c.execute("""SELECT COUNT(*) FROM pixiv_follow_image_url""")
+            row = c.fetchone()
+            return int(row[0]) if row else 0
+        except BaseException:
+            print("Error at countFollowImageUrlsAll():", str(sys.exc_info()))
+            print("failed")
+            raise
+        finally:
+            c.close()
+
+    def selectFollowImageUrls(self, image_id):
+        try:
+            c = self.conn.cursor()
+            c.execute(
+                """SELECT page_index, original_url, regular_url
+                     FROM pixiv_follow_image_url
+                     WHERE image_id = ?
+                     ORDER BY page_index ASC""",
+                (int(image_id),),
+            )
+            return c.fetchall()
+        except BaseException:
+            print("Error at selectFollowImageUrls():", str(sys.exc_info()))
+            print("failed")
+            raise
+        finally:
+            c.close()
+
+    def selectFollowImagePage0Urls(self, image_ids):
+        if not image_ids:
+            return {}
+        try:
+            c = self.conn.cursor()
+            placeholders = ",".join(["?"] * len(image_ids))
+            c.execute(
+                f"""SELECT image_id, original_url, regular_url
+                      FROM pixiv_follow_image_url
+                     WHERE page_index = 0 AND image_id IN ({placeholders})""",
+                tuple(int(x) for x in image_ids),
+            )
+            return {int(row[0]): (row[1], row[2]) for row in c.fetchall()}
+        except BaseException:
+            print("Error at selectFollowImagePage0Urls():", str(sys.exc_info()))
+            print("failed")
+            raise
+        finally:
+            c.close()
+
+    def deleteFollowImage(self, image_id):
+        try:
+            c = self.conn.cursor()
+            c.execute(
+                """DELETE FROM pixiv_follow_image_url WHERE image_id = ?""",
+                (int(image_id),),
+            )
+            c.execute(
+                """DELETE FROM pixiv_follow_image WHERE image_id = ?""",
+                (int(image_id),),
+            )
+            self.conn.commit()
+        except BaseException:
+            print("Error at deleteFollowImage():", str(sys.exc_info()))
+            print("failed")
+            raise
+        finally:
+            c.close()
+
+    def deleteFollowMemberCascade(self, member_id):
+        try:
+            c = self.conn.cursor()
+            c.execute(
+                """DELETE FROM pixiv_follow_image_url
+                        WHERE image_id IN (SELECT image_id FROM pixiv_follow_image WHERE member_id = ?)""",
+                (int(member_id),),
+            )
+            c.execute(
+                """DELETE FROM pixiv_follow_image WHERE member_id = ?""",
+                (int(member_id),),
+            )
+            c.execute(
+                """DELETE FROM pixiv_follow_member WHERE member_id = ?""",
+                (int(member_id),),
+            )
+            self.conn.commit()
+        except BaseException:
+            print("Error at deleteFollowMemberCascade():", str(sys.exc_info()))
+            print("failed")
+            raise
+        finally:
+            c.close()
+
     def create_update_novel_table(self, c):
         c.execute("""CREATE TABLE IF NOT EXISTS novel_detail (
                         post_id INTEGER,

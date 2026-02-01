@@ -601,21 +601,35 @@ class FanboxArtist(object):
                 # or old api
                 post_root = js_body
 
-            # for jsPost in post_root["items"]:
-            for jsPost in post_root:
+            items = None
+            if isinstance(post_root, dict):
+                if "items" in post_root and isinstance(post_root["items"], list):
+                    items = post_root["items"]
+                elif "id" in post_root:
+                    items = [post_root]
+                else:
+                    items = []
+            elif isinstance(post_root, list):
+                items = post_root
+            else:
+                items = []
+
+            for jsPost in items:
                 post_id = int(jsPost["id"])
                 post = FanboxPost(post_id, self, jsPost, tzInfo=self._tzInfo)
                 posts.append(post)
                 # sanity check
                 assert (self.artistId == int(jsPost["user"]["userId"])), "Different user id from constructor!"
 
-            # self.nextUrl = post_root["nextUrl"]
-            self.PageIndex += 1
-            if self.PageIndex < len(self.Pages):
-                self.nextUrl = self.Pages[self.PageIndex]
-            else:
-                self.nextUrl = None
-            if self.nextUrl is not None and len(self.nextUrl) > 0:
+            self.hasNextPage = False
+            self.nextUrl = None
+            next_url = None
+            if isinstance(post_root, dict):
+                next_url = post_root.get("nextUrl")
+            if next_url is None and isinstance(js_body, dict):
+                next_url = js_body.get("nextUrl")
+            if next_url is not None and len(str(next_url)) > 0:
+                self.nextUrl = str(next_url)
                 self.hasNextPage = True
 
             return posts

@@ -22,6 +22,7 @@ import handler.PixivArtistHandler as PixivArtistHandler
 import handler.PixivBatchHandler as PixivBatchHandler
 import handler.PixivBookmarkHandler as PixivBookmarkHandler
 import handler.PixivFanboxHandler as PixivFanboxHandler
+import handler.PixivFollowIndexHandler as PixivFollowIndexHandler
 import handler.PixivImageHandler as PixivImageHandler
 import handler.PixivListHandler as PixivListHandler
 import handler.PixivNovelHandler as PixivNovelHandler
@@ -172,6 +173,7 @@ def menu():
     print(' 17. Download by Rank R-18')
     print(' 18. Download by New Illusts')
     print(' 19. Download by Unlisted image_id')
+    print(' 20. Sync followed artists (URL index + previews)')
     print(Style.BRIGHT + '── FANBOX '.ljust(PADDING, "─") + Style.RESET_ALL)
     print(' f1. Download from supporting list (FANBOX)')
     print(' f2. Download by artist/creator id (FANBOX)')
@@ -536,6 +538,44 @@ def menu_download_from_online_user_bookmark(opisvalid, args, options):
                                           start_page,
                                           end_page,
                                           bookmark_count=bookmark_count)
+
+
+def menu_sync_followed_artists_url_index(opisvalid, args, options):
+    __log__.info("Follow sync URL index (20).")
+    hide = "n"
+    preview_per_artist = 3
+
+    if opisvalid:
+        if options.bookmark_flag is not None:
+            hide = options.bookmark_flag.lower()
+            if hide not in ("y", "n", "o"):
+                PixivHelper.print_and_log("error", f"Invalid args for bookmark_flag: {args}, valid values are [y/n/o].")
+                return
+        if options.preview_per_artist is not None:
+            try:
+                preview_per_artist = int(options.preview_per_artist)
+            except ValueError:
+                preview_per_artist = 3
+    else:
+        arg = input("Include Private follows [y/n/o, default is no]: ").rstrip("\r") or "n"
+        arg = arg.lower()
+        if arg in ("y", "n", "o"):
+            hide = arg
+        else:
+            print("Invalid args: ", arg)
+            return
+        preview_input = input("Preview per new artist [default 3]: ").rstrip("\r") or "3"
+        try:
+            preview_per_artist = int(preview_input)
+        except ValueError:
+            preview_per_artist = 3
+
+    PixivFollowIndexHandler.sync_followed_artists(
+        sys.modules[__name__],
+        __config__,
+        bookmark_flag=hide,
+        preview_per_artist=preview_per_artist,
+    )
 
 
 def menu_download_from_online_image_bookmark(opisvalid, args, options):
@@ -1244,7 +1284,7 @@ def set_console_title(title=''):
 def setup_option_parser():
 
     global __valid_options
-    __valid_options = ('1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19',
+    __valid_options = ('1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '20',
                        'f1', 'f2', 'f3', 'f4', 'f5',
                        's1', 's2',
                        'l', 'd', 'e', 'm', 'b', 'p', 'c')
@@ -1265,6 +1305,7 @@ def setup_option_parser():
 10 - Download by Tag and Member Id                  \n
 11 - Download images from Member Bookmark           \n
 12 - Download images by Group Id                    \n
+20 - Sync followed artists (URL index + previews)   \n
 f1 - Download from supporting list (FANBOX)         \n
 f2 - Download by artist/creator id (FANBOX)         \n
 f3 - Download by post id (FANBOX)                   \n
@@ -1374,6 +1415,10 @@ If using relative path, it will be prefixed with [downloadlistdirectory] in conf
                       default=-1,
                       help='''Bookmark count limit in integer.                       \n
 Used in option 3, 5, 7, and 8.''')
+    parser.add_option('--preview', '--preview_per_artist',
+                      dest='preview_per_artist',
+                      default=None,
+                      help='''Preview download count (int) for option 20. Default is 3.''')
     parser.add_option('--rm', '--rank_mode',
                       dest='rank_mode',
                       default="daily",
@@ -1469,6 +1514,8 @@ def main_loop(ewd, op_is_valid, selection, np_is_valid_local, args, options):
                 menu_download_new_illusts(op_is_valid, args, options)
             elif selection == '19':
                 menu_download_by_unlisted_image_id(op_is_valid, args, options)
+            elif selection == '20':
+                menu_sync_followed_artists_url_index(op_is_valid, args, options)
             elif selection == "l":
                 menu_export_database_images(op_is_valid, args, options)
             elif selection == 'b':

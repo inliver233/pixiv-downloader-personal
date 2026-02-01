@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block content %}
+  <section class="card">
+    <div class="row row--spread">
+      <div>
+        <h1 class="h1" id="artist-name">画师</h1>
+        <p class="muted" id="artist-meta">-</p>
+      </div>
+      <div class="row">
+        <a class="btn" id="btn-open-pixiv" target="_blank" rel="noreferrer">打开 Pixiv</a>
+        <a class="btn" id="btn-export-regular" target="_blank" rel="noreferrer">导出 URL（Regular）</a>
+        <a class="btn" id="btn-export-original" target="_blank" rel="noreferrer">导出 URL（Original）</a>
+      </div>
+    </div>
+
+    <div class="row" id="artist-previews" style="margin-top: 12px;">
+      <div class="muted">预览图加载中...</div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="row row--spread">
+      <div>
+        <h2 class="h2">作品</h2>
+        <p class="muted" id="works-meta">-</p>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table class="table" id="works-table">
+        <thead>
+          <tr>
+            <th>缩略</th>
+            <th>ID</th>
+            <th>标题</th>
+            <th>页数</th>
+            <th>时间</th>
+            <th>收藏</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td colspan="7" class="muted">加载中...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="row row--spread" style="margin-top: 12px;">
+      <div class="muted" id="works-pagination-info">-</div>
+      <div class="row">
+        <button class="btn" id="works-prev">上一页</button>
+        <button class="btn" id="works-next">下一页</button>
+      </div>
+    </div>
+  </section>
+
+  <dialog class="modal" id="urls-modal">
+    <div class="modal__inner">
+      <div class="row row--spread">
+        <div>
+          <div class="h2" id="modal-title">URL</div>
+          <div class="muted" id="modal-subtitle">-</div>
+        </div>
+        <button class="btn" id="modal-close">关闭</button>
+      </div>
+      <div class="row">
+        <button class="btn btn--primary" id="copy-urls">复制（镜像/反代优先）</button>
+      </div>
+      <pre class="log" id="urls-box">(加载中...)</pre>
+    </div>
+  </dialog>
+{% endblock %}
+
+{% block scripts %}
+  <script>
+    window.__ARTIST_ID__ = {{ member_id | tojson }};
+  </script>
+{% endblock %}
+

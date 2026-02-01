@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{ title or "Pixiv 关注索引" }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}" />
+  </head>
+  <body data-page="{{ page_name or '' }}">
+    <header class="topbar">
+      <div class="topbar__inner">
+        <div class="brand">
+          <span class="brand__dot"></span>
+          <span class="brand__text">Pixiv 关注索引</span>
+        </div>
+        <nav class="nav">
+          <a class="nav__link" href="{{ url_for('index') }}">面板</a>
+          <a class="nav__link" href="{{ url_for('page_artists') }}">画师</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="wrap">
+      {% block content %}{% endblock %}
+    </main>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+    {% block scripts %}{% endblock %}
+  </body>
+</html>
+

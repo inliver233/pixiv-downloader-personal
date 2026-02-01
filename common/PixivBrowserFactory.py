@@ -9,6 +9,7 @@ import socket
 import sys
 import time
 import traceback
+import urllib.request
 from urllib.error import HTTPError
 from urllib.parse import urlparse
 from urllib.request import Request
@@ -239,7 +240,57 @@ class PixivBrowser(mechanize.Browser):
 
                     PixivHelper.print_and_log('error', f'Error at open_with_retry(): {sys.exc_info()}')
                     raise PixivException(f"Failed to get page: {temp}, please check your internet connection/firewall/antivirus.",
-                                         errorCode=PixivException.SERVER_ERROR)
+                     errorCode=PixivException.SERVER_ERROR)
+
+    def _get_pixiv_page_by_curl(self, url: str, referer: str = "https://www.pixiv.net") -> str:
+        """Fetch a pixiv.net page using curl_cffi (libcurl).
+
+        This is a fallback for environments where Python's http.client can intermittently raise
+        IncompleteRead on chunked responses (often seen when using local proxies).
+        """
+        assert self._config is not None
+
+        headers = {
+            "Referer": referer,
+            "User-Agent": self._config.useragent,
+        }
+
+        # Best effort: reuse cookies already loaded into mechanize's cookie jar.
+        try:
+            jar = self._ua_handlers["_cookies"].cookiejar
+            cookie_req = Request(url)
+            jar.add_cookie_header(cookie_req)
+            cookie_header = cookie_req.get_header("Cookie")
+            if cookie_header:
+                headers["Cookie"] = cookie_header
+        except BaseException:
+            # Fallback: send config cookie (PHPSESSID) if available.
+            cookie_value = getattr(self._config, "cookie", "")
+            if cookie_value:
+                headers["Cookie"] = cookie_value if "PHPSESSID=" in cookie_value else f"PHPSESSID={cookie_value}"
+
+        proxies = None
+        if self._config.useProxy and self._config.proxy is not None:
+            proxies = self._config.proxy
+        else:
+            # Match urllib's behaviour on Windows (reads system proxy from registry).
+            proxies = urllib.request.getproxies()
+
+        if proxies is not None:
+            proxies = {k: v for k, v in proxies.items() if k in ("http", "https")}
+            if len(proxies) == 0:
+                proxies = None
+
+        # curl_cffi follows the "requests" API; use browser impersonation to avoid anti-bot blocks.
+        resp = curl_cffi.get(url,
+                             headers=headers,
+                             proxies=proxies,
+                             impersonate="firefox135",
+                             timeout=self._config.timeout)
+        try:
+            return resp.text
+        finally:
+            resp.close()
 
     # def getPixivPage(self, url, referer="https://www.pixiv.net", returnParsed=True, enable_cache=True) -> Union[str, BeautifulSoup]:
     def getPixivPage(self, url, referer="https://www.pixiv.net", enable_cache=True) -> str:
@@ -253,18 +304,34 @@ class PixivBrowser(mechanize.Browser):
             req = mechanize.Request(url)
             req.add_header('Referer', referer)
 
-            read_page = self._get_from_cache(url)
+            # Some pages are sensitive to auth/session state (e.g. login checks). When enable_cache=False,
+            # bypass cache lookup entirely to avoid returning stale/unauthenticated HTML.
+            read_page = self._get_from_cache(url) if enable_cache else None
             if read_page is None:
                 while True:
                     try:
                         temp = self.open_with_retry(req)
                         assert (temp is not None)
-                        read_page = temp.read()
+                        try:
+                            read_page = temp.read()
+                        finally:
+                            temp.close()
                         read_page = read_page.decode('utf8')
                         if enable_cache:
                             self._put_to_cache(url, read_page)
-                        temp.close()
                         break
+                    except http.client.IncompleteRead as ex:
+                        # Workaround for flaky chunked responses via Python's http.client.
+                        # If libcurl succeeds, use that result (and keep retry behaviour for other errors).
+                        PixivHelper.get_logger().warning('IncompleteRead at getPixivPage(%s), trying curl fallback: %s', url, ex)
+                        try:
+                            read_page = self._get_pixiv_page_by_curl(url, referer=referer)
+                            if enable_cache:
+                                self._put_to_cache(url, read_page)
+                            break
+                        except BaseException:
+                            PixivHelper.get_logger().debug('curl_cffi fallback failed: %s', sys.exc_info())
+                            raise
                     except HTTPError as ex:
                         if ex.code in [403, 404, 503]:
                             read_page = ex.read()
@@ -275,6 +342,18 @@ class PixivBrowser(mechanize.Browser):
                     except BaseException:
                         exc_value = sys.exc_info()[1]
                         assert (self._config is not None)
+                        # If mechanize/http.client is flaky (proxy/TLS issues), try libcurl as a fallback.
+                        # This helps with errors like SSL EOF / connection resets where mechanize may fail repeatedly.
+                        try:
+                            PixivHelper.get_logger().warning(
+                                "Error at getPixivPage(%s), trying curl_cffi fallback: %s", url, exc_value
+                            )
+                            read_page = self._get_pixiv_page_by_curl(url, referer=referer)
+                            if enable_cache:
+                                self._put_to_cache(url, read_page)
+                            break
+                        except BaseException:
+                            PixivHelper.get_logger().debug("curl_cffi fallback failed: %s", sys.exc_info())
                         if retry_count < self._config.retry:
                             print(exc_value, end=' ')
                             for t in range(1, self._config.retryWait):
@@ -357,14 +436,11 @@ class PixivBrowser(mechanize.Browser):
             PixivHelper.print_and_log('info', 'Trying to log in with saved cookie')
             self.clearCookie()
             self._loadCookie(login_cookie, "pixiv.net")
-            res = self.open_with_retry('https://www.pixiv.net')  # + self._locale)
-            assert (res is not None)
-            parsed = BeautifulSoup(res, features="html5lib")
-            parsed_str = str(parsed)
-            PixivHelper.print_and_log("info", f'Logging in, return url: {res.geturl()}')
-            res.close()
-            parsed.decompose()
-            del parsed
+
+            # Do not pass the response object to BeautifulSoup directly: BeautifulSoup will call .read()
+            # internally, and intermittent IncompleteRead errors from http.client can bubble up and break
+            # the whole login flow. Reading the page via getPixivPage gives us retry handling.
+            parsed_str = self.getPixivPage('https://www.pixiv.net', enable_cache=False)
 
             if "logout.php" in parsed_str:
                 result = True
@@ -374,14 +450,26 @@ class PixivBrowser(mechanize.Browser):
                 result = True
             if "var dataLayer = [{ login: 'yes'," in parsed_str:
                 result = True
+            # Modern Pixiv uses Next.js; login state is exposed via __NEXT_DATA__.
+            if "\"isLoggedIn\":true" in parsed_str:
+                result = True
 
             if result:
                 PixivHelper.print_and_log('info', 'Login successful.')
                 PixivHelper.get_logger().info('Logged in using cookie')
                 self.getMyId(parsed_str)
-                temp_locale = str(res.geturl()).replace('https://www.pixiv.net', '').replace('/', '')
-                if len(temp_locale) > 0:
-                    self._locale = '/' + temp_locale
+                # Locale is now derived from Next.js data when possible; fallback to empty.
+                try:
+                    next_data_match = re.search(r'<script id=\"__NEXT_DATA__\" type=\"application/json\">(.*?)</script>',
+                                                parsed_str, re.S)
+                    if next_data_match:
+                        next_data = json.loads(next_data_match.group(1))
+                        lang = next_data.get("props", {}).get("pageProps", {}).get("lang", "")
+                        # Pixiv uses /en for English; other languages generally use the root path.
+                        self._locale = "/en" if lang == "en" else ""
+                except BaseException:
+                    # Keep previous behaviour if parsing fails.
+                    pass
                 PixivHelper.get_logger().info('Locale = %s', self._locale)
             else:
                 PixivHelper.get_logger().info('Failed to log in using cookie')
@@ -610,30 +698,87 @@ class PixivBrowser(mechanize.Browser):
                     self._myId = int(temp[0])
                     PixivHelper.print_and_log('info', f'My User Id: {self._myId}.')
 
+        # Pixiv migrated to Next.js; user id is now present inside __NEXT_DATA__.
+        # We keep this as a fallback to maintain compatibility with older HTML fixtures.
+        next_self_data = None
+        if self._myId == 0:
+            try:
+                next_data_match = re.search(r'<script id=\"__NEXT_DATA__\" type=\"application/json\">(.*?)</script>',
+                                            parsed, re.S)
+                if next_data_match:
+                    next_data = json.loads(next_data_match.group(1))
+                    page_props = next_data.get("props", {}).get("pageProps", {})
+
+                    # Prefer serverSerializedPreloadedState.userData.self.id.
+                    ssp = page_props.get("serverSerializedPreloadedState", "")
+                    if isinstance(ssp, str) and len(ssp) > 0:
+                        try:
+                            ssp_obj = json.loads(ssp)
+                            next_self_data = ssp_obj.get("userData", {}).get("self", {})
+                            next_id = next_self_data.get("id")
+                            if isinstance(next_id, str) and next_id.isdigit():
+                                self._myId = int(next_id)
+                            elif isinstance(next_id, int):
+                                self._myId = next_id
+                        except BaseException:
+                            next_self_data = None
+
+                    # Fallback: gaUserData.userId is usually present when logged in.
+                    if self._myId == 0:
+                        ga_user_data = page_props.get("gaUserData", {}) or {}
+                        next_id = ga_user_data.get("userId")
+                        if isinstance(next_id, str) and next_id.isdigit():
+                            self._myId = int(next_id)
+                        elif isinstance(next_id, int):
+                            self._myId = next_id
+            except BaseException:
+                # Keep legacy behaviour; raise later if still 0.
+                next_self_data = None
+
+        # Last-resort fallback: PHPSESSID often starts with the numeric user id.
+        if self._myId == 0 and self._config is not None and getattr(self._config, "cookie", ""):
+            try:
+                m = re.match(r"^(\d+)_", str(self._config.cookie))
+                if m:
+                    self._myId = int(m.group(1))
+                    PixivHelper.print_and_log('info', f'My User Id: {self._myId}.')
+            except BaseException:
+                pass
+
         if self._myId == 0:
             PixivHelper.print_and_log('error', 'Unable to get User Id, please check your cookie.')
             PixivHelper.print_and_log('error', 'Please follow the instruction in https://github.com/Nandaka/PixivUtil2/issues/814#issuecomment-711182644')
             raise PixivException("Unable to get User Id, please check your cookie.", errorCode=PixivException.NOT_LOGGED_IN, htmlPage=parsed)
 
-        self._isPremium = False
-        # not used anymore
-        # temp = re.findall(r"pixiv.user.premium = (\w+);", parsed)
-        # if temp is not None and len(temp) > 0:
-        #     self._isPremium = True if temp[0] == "true" else False
-        # else:
-        temp = re.findall(r"_gaq.push\(\['_setCustomVar', 3, 'plan', '(\w+)', 1\]\)", parsed)
-        if temp is not None and len(temp) > 0:
-            self._isPremium = True if temp[0] == "premium" else False
+        # Premium and xRestrict are now available in the Next.js preloaded state.
+        if isinstance(next_self_data, dict) and len(next_self_data) > 0:
+            self._isPremium = bool(next_self_data.get("premium", False))
+            try:
+                self._xRestrict = int(next_self_data.get("xRestrict", 0))
+            except BaseException:
+                self._xRestrict = 0
         else:
-            temp = re.findall(r"var dataLayer = .*premium:\s?'(\w+)'", parsed)
+            self._isPremium = False
+            # not used anymore
+            # temp = re.findall(r"pixiv.user.premium = (\w+);", parsed)
+            # if temp is not None and len(temp) > 0:
+            #     self._isPremium = True if temp[0] == "true" else False
+            # else:
+            temp = re.findall(r"_gaq.push\(\['_setCustomVar', 3, 'plan', '(\w+)', 1\]\)", parsed)
             if temp is not None and len(temp) > 0:
-                self._isPremium = True if temp[0] == "yes" else False
-        PixivHelper.print_and_log('info', f'Premium User: {self._isPremium}.')
+                self._isPremium = True if temp[0] == "premium" else False
+            else:
+                temp = re.findall(r"var dataLayer = .*premium:\s?'(\w+)'", parsed)
+                if temp is not None and len(temp) > 0:
+                    self._isPremium = True if temp[0] == "yes" else False
 
-        self._xRestrict = 0
-        temp = re.findall(r"\"xRestrict\\?\":(\d+)", parsed)
-        if temp is not None and len(temp) > 0:
-            self._xRestrict = int(temp[0])
+            self._xRestrict = 0
+            # Handle both `"xRestrict":2` and the escaped form `\"xRestrict\":2` present in __NEXT_DATA__.
+            temp = re.findall(r"\\?\"xRestrict\\?\":(\d+)", parsed)
+            if temp is not None and len(temp) > 0:
+                self._xRestrict = int(temp[0])
+
+        PixivHelper.print_and_log('info', f'Premium User: {self._isPremium}.')
         if self._xRestrict == 1:
             PixivHelper.print_and_log('warn', 'R-18G is disabled from pixiv website settings.')
         elif self._xRestrict == 0:
@@ -654,25 +799,29 @@ class PixivBrowser(mechanize.Browser):
                      image_response_count=-1,
                      manga_series_order=-1,
                      manga_series_parent=None,
-                     is_unlisted=False) -> Tuple[PixivImage, str]:
+                     is_unlisted=False,
+                     skip_medium_page=False) -> Tuple[PixivImage, str]:
         image = None
         response = None
         PixivHelper.get_logger().debug("Getting image page: %s", image_id)
-        if not is_unlisted:
-            # https://www.pixiv.net/en/artworks/76656661
-            url = f"https://www.pixiv.net{self._locale}/artworks/{image_id}"
-        else:
-            # https://www.pixiv.net/artworks/unlisted/SbliQHtJS5MMu3elqDFZ
-            url = f"https://www.pixiv.net{self._locale}/artworks/unlisted/{image_id}"
-        response = self.getPixivPage(url, enable_cache=False)
-        self.handleDebugMediumPage(response, image_id)
+        if not skip_medium_page:
+            if not is_unlisted:
+                # https://www.pixiv.net/en/artworks/76656661
+                url = f"https://www.pixiv.net{self._locale}/artworks/{image_id}"
+            else:
+                # https://www.pixiv.net/artworks/unlisted/SbliQHtJS5MMu3elqDFZ
+                url = f"https://www.pixiv.net{self._locale}/artworks/unlisted/{image_id}"
+            response = self.getPixivPage(url, enable_cache=False)
+            self.handleDebugMediumPage(response, image_id)
 
         # Issue #355 new ui handler
         image = None
         try:
 
             # https://www.pixiv.net/ajax/illust/129153804?lang=en
-            js_image_info = f"https://www.pixiv.net/ajax/illust/{image_id}?lang={self._locale}"
+            locale = self._locale[1:] if (self._locale is not None and self._locale.startswith("/")) else self._locale
+            locale = locale or "en"
+            js_image_info = f"https://www.pixiv.net/ajax/illust/{image_id}?lang={locale}"
             response = self.getPixivPage(js_image_info, enable_cache=False)
             PixivHelper.print_and_log('debug', f'js_image_info = {response}')
 
@@ -696,10 +845,8 @@ class PixivBrowser(mechanize.Browser):
 
             if image.imageMode == "ugoira_view":
                 ugoira_meta_url = f"https://www.pixiv.net/ajax/illust/{image_id}/ugoira_meta"
-                res = self.open_with_retry(ugoira_meta_url)
-                meta_response = res.read()
+                meta_response = self.getPixivPage(ugoira_meta_url, enable_cache=False)
                 image.ParseUgoira(meta_response)
-                res.close()
 
             if parent is None:
                 if from_bookmark:
@@ -737,11 +884,8 @@ class PixivBrowser(mechanize.Browser):
                 PixivHelper.get_logger().debug("using webrpc: %s", url)
                 info = self._get_from_cache(url)
                 if info is None:
-                    request = mechanize.Request(url)
-                    res = self.open_with_retry(request)
-                    infoStr = res.read()
-                    res.close()
-                    info = json.loads(infoStr)
+                    info_str = self.getPixivPage(url, enable_cache=False)
+                    info = json.loads(info_str)
                     self._put_to_cache(url, info)
             else:
                 PixivHelper.print_and_log('info', f'Using OAuth to retrieve member info for: {member_id}')
@@ -771,9 +915,7 @@ class PixivBrowser(mechanize.Browser):
             url_ajax = f'https://www.pixiv.net/ajax/user/{member_id}'
             info_ajax = self._get_from_cache(url_ajax)
             if info_ajax is None:
-                res = self.open_with_retry(url_ajax)
-                info_ajax_str = res.read()
-                res.close()
+                info_ajax_str = self.getPixivPage(url_ajax, enable_cache=False)
                 info_ajax = json.loads(info_ajax_str)
                 self._put_to_cache(url_ajax, info_ajax)
             # 2nd pass to get the background

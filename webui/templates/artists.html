@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block content %}
+  <section class="card">
+    <div class="row row--spread">
+      <div>
+        <h1 class="h1">画师</h1>
+        <p class="muted">来自本地索引库（通过“关注同步”生成）。</p>
+      </div>
+      <div class="row">
+        <input class="input" id="artist-query" placeholder="搜索 id / 名称 / token" />
+        <button class="btn btn--primary" id="artist-search">搜索</button>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table class="table" id="artist-table">
+        <thead>
+          <tr>
+            <th>头像</th>
+            <th>ID</th>
+            <th>名称</th>
+            <th>Token</th>
+            <th>作品</th>
+            <th>URL</th>
+            <th>同步时间</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td colspan="8" class="muted">加载中...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="row row--spread" style="margin-top: 12px;">
+      <div class="muted" id="artist-pagination-info">-</div>
+      <div class="row">
+        <button class="btn" id="artist-prev">上一页</button>
+        <button class="btn" id="artist-next">下一页</button>
+      </div>
+    </div>
+  </section>
+{% endblock %}
+

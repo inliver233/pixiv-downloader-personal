@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="grid">
+    <section class="card">
+      <h1 class="h1">面板</h1>
+      <p class="muted">关注同步（只索引 URL） + 每画师预览图（默认 3 张）。</p>
+
+      <div class="stats" id="stats">
+        <div class="stat">
+          <div class="stat__k">画师</div>
+          <div class="stat__v" id="stat-members">-</div>
+        </div>
+        <div class="stat">
+          <div class="stat__k">作品</div>
+          <div class="stat__v" id="stat-images">-</div>
+        </div>
+        <div class="stat">
+          <div class="stat__k">URL</div>
+          <div class="stat__v" id="stat-urls">-</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2 class="h2">关注同步</h2>
+      <div class="row">
+        <label class="label">
+          <span>关注范围</span>
+          <select class="input" id="sync-bookmark-flag">
+            <option value="n">仅公开关注</option>
+            <option value="y">公开 + 隐藏关注</option>
+            <option value="o">仅隐藏关注</option>
+          </select>
+        </label>
+        <label class="label">
+          <span>每画师预览</span>
+          <input class="input" id="sync-preview" type="number" min="0" max="10" value="3" />
+        </label>
+      </div>
+      <div class="row">
+        <button class="btn btn--primary" id="btn-sync">开始同步</button>
+        <button class="btn" id="btn-stop" disabled>停止任务</button>
+        <span class="pill" id="job-status">idle</span>
+      </div>
+
+      <details class="details">
+        <summary>任务日志</summary>
+        <pre class="log" id="log-box">(暂无)</pre>
+      </details>
+    </section>
+
+    <section class="card">
+      <h2 class="h2">基础配置</h2>
+      <p class="muted">建议优先使用 Cookie / refresh_token 登录；镜像/反代可用于浏览器直接打开 URL。</p>
+      <form id="config-form" class="form">
+        <div class="row">
+          <label class="label">
+            <span>下载根目录（rootDirectory）</span>
+            <input class="input" name="rootDirectory" placeholder="." />
+          </label>
+          <label class="label">
+            <span>列表目录（downloadListDirectory）</span>
+            <input class="input" name="downloadListDirectory" placeholder="." />
+          </label>
+        </div>
+
+        <div class="row">
+          <label class="label">
+            <span>用户名（username）</span>
+            <input class="input" name="username" placeholder="" />
+          </label>
+          <label class="label">
+            <span>密码（password）</span>
+            <input class="input" name="password" type="password" placeholder="（可留空）" />
+          </label>
+        </div>
+
+        <div class="row">
+          <label class="label">
+            <span>Pixiv Cookie（PHPSESSID）</span>
+            <input class="input" name="cookie" type="password" placeholder="（推荐）" />
+          </label>
+          <label class="label">
+            <span>refresh_token</span>
+            <input class="input" name="refresh_token" type="password" placeholder="（可选）" />
+          </label>
+        </div>
+
+        <div class="row">
+          <label class="label label--inline">
+            <input type="checkbox" name="useMirrorHost" />
+            <span>启用镜像/反代（useMirrorHost）</span>
+          </label>
+          <label class="label">
+            <span>镜像域名（mirrorHost）</span>
+            <input class="input" name="mirrorHost" placeholder="i.pixiv.cat 或 http://127.0.0.1:PORT" />
+          </label>
+        </div>
+
+        <div class="row">
+          <label class="label">
+            <span>downloadDelay（建议 0～2）</span>
+            <input class="input" name="downloadDelay" type="number" min="0" max="30" />
+          </label>
+          <label class="label label--inline">
+            <input type="checkbox" name="mirrorMultithread" />
+            <span>镜像分片多线程（下载用）</span>
+          </label>
+        </div>
+
+        <div class="row">
+          <button class="btn btn--primary" type="submit">保存配置</button>
+          <span class="pill" id="config-status">未加载</span>
+        </div>
+      </form>
+    </section>
+  </div>
+{% endblock %}
+
