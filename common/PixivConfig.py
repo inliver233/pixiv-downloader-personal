@@ -246,13 +246,13 @@ class PixivConfig():
         value = getattr(self, "proxyAddress", None)
         if not value:
             return None
-        match = re.match(r"^(?:(https?|socks[45]h?)://)?([\w.-]+)(:\d+)?$", value)
-        if not match:
+        try:
+            from common.ProxyUtils import normalize_proxy_url, proxies_dict
+
+            normalized = normalize_proxy_url(value)
+            return proxies_dict(normalized)
+        except Exception:
             return None
-        scheme, netloc, port = match.groups()
-        scheme = scheme or "http"
-        value = f"{scheme}://{netloc}{port}"
-        return {"http": value, "https": value}
 
     def loadConfig(self, path=None):
         if path is not None:

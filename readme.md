@@ -68,6 +68,19 @@ $ docker run -it --rm \
 # WARNING
 Overusage can lead to Pixiv blocking your IP for a few hours.
 
+# Multi-Account / Proxy-Pool Runner (This Fork)
+
+This personal fork adds a long-running multi-account scheduler that can bind each account to a proxy pool node (supports `easy_proxies`) and hot-reload without restarting.
+
+- Config template: `multi_config.example.json` (copy to `multi_config.json`, then fill your cookies/tokens)
+- Runner: `python PixivMultiRunner.py --config multi_config.json`
+- Worker: `PixivMultiWorker.py` (started automatically by the runner)
+- WebUI 管理（无需手工编辑配置）：`python web_ui.py` 后打开 `http://127.0.0.1:5000/multi`
+
+Notes:
+- Proxy URLs with special characters in passwords (e.g. `...:pass@123@host:port`) are auto-normalized/URL-encoded for compatibility.
+- `multi_config.json` and `.multi_runtime/` are ignored by git.
+
 # FAQs
 
 ## A. Usage

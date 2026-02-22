@@ -19,11 +19,18 @@ pixivutil.log*
 *.log
 *.log.*
 config.ini*
+multi_config.json
+multi_config.local.json
+.multi_runtime/
 db.sqlite
 *.sqlite
 *.sqlite-journal
 *.sqlite-shm
 *.sqlite-wal
+follow_done.txt
+follow_failed.txt
+auto_follow_log.jsonl
+following_member_ids.txt
 cookies*.txt
 *.cookie
 *.session
@@ -85,3 +92,6 @@ Network Trash Folder
 Temporary Items
 .apdisk
 Error*
+
+# Third-party tools (vendored / local clones)
+easy_proxies/

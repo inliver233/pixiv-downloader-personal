@@ -38,6 +38,10 @@ defaultCookieJar = None
 defaultConfig = None
 _browser = None
 
+# Keep original socket functions so we can restore them when toggling SOCKS proxies.
+_ORIG_SOCKET_SOCKET = socket.socket
+_ORIG_SOCKET_GETADDRINFO = socket.getaddrinfo
+
 
 # pylint: disable=E1101
 class PixivBrowser(mechanize.Browser):
@@ -128,9 +132,19 @@ class PixivBrowser(mechanize.Browser):
             defaultConfig = config
 
         self._config = config
-        if config.useProxy:
-            if config.proxyAddress.startswith('socks'):
-                parseResult = urlparse(config.proxyAddress)
+
+        proxy_address = getattr(config, "proxyAddress", "") or ""
+        if config.useProxy and proxy_address:
+            try:
+                from common.ProxyUtils import normalize_proxy_url
+
+                proxy_address = normalize_proxy_url(proxy_address)
+            except Exception:
+                # Keep legacy value if parsing fails.
+                proxy_address = getattr(config, "proxyAddress", "") or ""
+
+            if proxy_address.startswith('socks'):
+                parseResult = urlparse(proxy_address)
                 assert parseResult.scheme and parseResult.hostname and parseResult.port
                 socksType = socks.PROXY_TYPE_SOCKS5 if 'socks5' in parseResult.scheme else socks.PROXY_TYPE_SOCKS4
                 PixivHelper.get_logger().info(f"Using SOCKS5 Proxy= {parseResult.hostname}:{parseResult.port} @ {parseResult.username}")
@@ -144,12 +158,32 @@ class PixivBrowser(mechanize.Browser):
                 # https://github.com/Anorov/PySocks/issues/22
                 def getaddrinfo(*args):
                     return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (args[0], args[1]))]
-                self._orig_getaddrinfo = socket.getaddrinfo
                 socket.getaddrinfo = getaddrinfo
 
             else:
-                self.set_proxies(config.proxy)
-                PixivHelper.get_logger().info("Using Proxy: %s", config.proxyAddress)
+                # Restore original socket behaviour if we previously enabled SOCKS.
+                if socket.socket != _ORIG_SOCKET_SOCKET:
+                    socket.socket = _ORIG_SOCKET_SOCKET
+                if socket.getaddrinfo != _ORIG_SOCKET_GETADDRINFO:
+                    socket.getaddrinfo = _ORIG_SOCKET_GETADDRINFO
+                proxies = config.proxy or {}
+                self.set_proxies(proxies)
+                try:
+                    from common.ProxyUtils import mask_proxy_url
+
+                    PixivHelper.get_logger().info("Using Proxy: %s", mask_proxy_url(proxy_address))
+                except Exception:
+                    PixivHelper.get_logger().info("Using Proxy: %s", proxy_address)
+        else:
+            # No proxy requested; clear previous proxies and restore socket if needed.
+            try:
+                self.set_proxies({})
+            except Exception:
+                pass
+            if socket.socket != _ORIG_SOCKET_SOCKET:
+                socket.socket = _ORIG_SOCKET_SOCKET
+            if socket.getaddrinfo != _ORIG_SOCKET_GETADDRINFO:
+                socket.getaddrinfo = _ORIG_SOCKET_GETADDRINFO
 
         # self.set_handle_equiv(True)
         # self.set_handle_gzip(True)

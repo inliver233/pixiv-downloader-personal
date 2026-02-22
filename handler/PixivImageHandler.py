@@ -107,15 +107,32 @@ def process_image(caller,
         notifier(type="IMAGE", message=msg)
 
         # check if already downloaded. images won't be downloaded twice - needed in process_image to catch any download
-        r = db.selectImageByImageId(image_id, cols='save_name')
+        r = db.selectImageByImageId(image_id, cols='save_name, is_manga')
         exists = False
         in_db = False
+        is_manga = ""
         if r is not None:
+            is_manga = r[1] if len(r) > 1 and r[1] is not None else ""
             exists = db.cleanupFileExists(r[0])
+            if is_manga == "manga":
+                try:
+                    rows = db.selectImagesByImageId(image_id) or []
+                    for row in rows:
+                        # (image_id, page, save_name, created_date, last_update_date)
+                        page_filename = row[2] if len(row) > 2 else None
+                        if not page_filename:
+                            exists = False
+                            break
+                        if not db.cleanupFileExists(page_filename):
+                            exists = False
+                            break
+                except Exception:
+                    # If DB query fails, be conservative and do not skip download.
+                    exists = False
             in_db = True
 
         # skip if already recorded in db and alwaysCheckFileSize is disabled and overwrite is disabled.
-        if in_db and not config.alwaysCheckFileSize and not config.overwrite and not reencoding:
+        if in_db and exists and not config.alwaysCheckFileSize and not config.overwrite and not reencoding:
             PixivHelper.print_and_log(None, f'Already downloaded in DB: {image_id}')
             gc.collect()
             return PixivConstant.PIXIVUTIL_SKIP_DUPLICATE_NO_WAIT
@@ -613,6 +630,14 @@ def process_image(caller,
                 else:
                     PixivHelper.print_and_log('error', f"Files archived does not match total. Expected {total} but got {archived_count}.")
                     result = PixivConstant.PIXIVUTIL_NOT_OK
+
+        # If we successfully (re)downloaded everything, mark exists so we don't surface CHECK_DOWNLOAD.
+        if result in (
+            PixivConstant.PIXIVUTIL_OK,
+            PixivConstant.PIXIVUTIL_SKIP_DUPLICATE,
+            PixivConstant.PIXIVUTIL_SKIP_LOCAL_LARGER,
+        ):
+            exists = True
 
         if in_db and not exists:
             result = PixivConstant.PIXIVUTIL_CHECK_DOWNLOAD  # There was something in the database which had not been downloaded

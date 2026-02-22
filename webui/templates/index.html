@@ -88,6 +88,22 @@
 
         <div class="row">
           <label class="label label--inline">
+            <input type="checkbox" name="clearCookie" />
+            <span>清除 Cookie</span>
+          </label>
+          <label class="label label--inline">
+            <input type="checkbox" name="clearRefreshToken" />
+            <span>清除 refresh_token</span>
+          </label>
+          <label class="label label--inline">
+            <input type="checkbox" name="clearPassword" />
+            <span>清除密码</span>
+          </label>
+          <span class="muted">清除操作仅影响本次保存，保存后会自动取消勾选。</span>
+        </div>
+
+        <div class="row">
+          <label class="label label--inline">
             <input type="checkbox" name="useMirrorHost" />
             <span>启用镜像/反代（useMirrorHost）</span>
           </label>
@@ -95,6 +111,31 @@
             <span>镜像域名（mirrorHost）</span>
             <input class="input" name="mirrorHost" placeholder="i.pixiv.cat 或 http://127.0.0.1:PORT" />
           </label>
+        </div>
+
+        <div class="row">
+          <label class="label label--inline">
+            <input type="checkbox" name="useProxy" />
+            <span>启用代理（useProxy）</span>
+          </label>
+          <label class="label">
+            <span>proxyAddress（支持 http/socks；可直接粘贴 easy_proxies 导出）</span>
+            <input class="input" name="proxyAddress" type="password" placeholder="http://user:pass@host:port  或  socks5://host:port" />
+          </label>
+        </div>
+
+        <div class="row">
+          <label class="label label--inline">
+            <input type="checkbox" name="clearProxyAddress" />
+            <span>清除 proxyAddress</span>
+          </label>
+          <span class="muted">密码含 @ 也可直接粘贴（系统会自动兼容/规范化）。</span>
+        </div>
+
+        <div class="row">
+          <button class="btn" type="button" id="btn-proxy-test">测试代理连通性</button>
+          <span class="pill" id="proxy-test-status">-</span>
+          <span class="muted">默认测速目标：`https://www.pixiv.net/`</span>
         </div>
 
         <div class="row">

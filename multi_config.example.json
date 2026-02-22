@@ -1,0 +1,52 @@
+{
+  "base_config": "config.ini",
+  "runtime_dir": ".multi_runtime",
+  "accounts": [
+    {
+      "id": "acc1",
+      "cookie": "12345678_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "refresh_token": "",
+      "downloadDelay": 8,
+      "enabled": true,
+      "follow_source": true
+    },
+    {
+      "id": "acc2",
+      "cookie": "87654321_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+      "refresh_token": "",
+      "downloadDelay": 8,
+      "enabled": true,
+      "follow_source": true
+    }
+  ],
+  "follow": {
+    "bookmark_flag": "n",
+    "lang": "en",
+    "refresh_interval_sec": 1800,
+    "timeout_sec": 20
+  },
+  "proxy_pool": {
+    "source": "easy_proxies",
+    "refresh_interval_sec": 300,
+    "max_tokens_per_proxy": 2,
+    "bindings_strict": false,
+    "easy_proxies": {
+      "base_url": "http://127.0.0.1:9090",
+      "host_override": "",
+      "password": "",
+      "timeout_sec": 10,
+      "verify_ssl": true
+    },
+    "test": {
+      "target_url": "https://www.pixiv.net/robots.txt",
+      "timeout_sec": 8,
+      "concurrency": 20,
+      "attempts": 2,
+      "top_n": 20
+    }
+  },
+  "worker": {
+    "poll_interval_sec": 10,
+    "mode": "index_urls"
+  }
+}

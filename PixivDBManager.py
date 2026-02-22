@@ -6,6 +6,7 @@ import os
 import re
 import sqlite3
 import sys
+import time
 from datetime import datetime
 
 # import colorama
@@ -17,6 +18,34 @@ from model.PixivListItem import PixivListItem
 from common.PixivException import PixivException
 
 script_path = PixivHelper.module_path()
+
+
+def _is_sqlite_busy_error(exc: BaseException) -> bool:
+    if isinstance(exc, sqlite3.OperationalError):
+        msg = str(exc).lower()
+        return (
+            "database is locked" in msg
+            or "database table is locked" in msg
+            or "database schema is locked" in msg
+            or "database is busy" in msg
+        )
+    return False
+
+
+def _with_sqlite_busy_retry(op, *, conn: sqlite3.Connection, retries: int = 6, base_delay_s: float = 0.05):
+    attempt = 0
+    while True:
+        try:
+            return op()
+        except BaseException as exc:
+            if attempt >= int(retries) or not _is_sqlite_busy_error(exc):
+                raise
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            time.sleep(float(base_delay_s) * (2 ** attempt))
+            attempt += 1
 
 
 class PixivDBManager(object):
@@ -1922,28 +1951,33 @@ class PixivDBManager(object):
         avatar_url=None,
         background_url=None,
     ):
-        try:
+        member_id = int(member_id)
+
+        def _op():
             c = self.conn.cursor()
-            member_id = int(member_id)
-            c.execute(
-                """INSERT INTO pixiv_follow_member (
-                        member_id, name, member_token, avatar_url, background_url, created_date, last_sync_date
-                    ) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-                    ON CONFLICT(member_id) DO UPDATE SET
-                        name = COALESCE(excluded.name, name),
-                        member_token = COALESCE(excluded.member_token, member_token),
-                        avatar_url = COALESCE(excluded.avatar_url, avatar_url),
-                        background_url = COALESCE(excluded.background_url, background_url),
-                        last_sync_date = datetime('now')""",
-                (member_id, name, member_token, avatar_url, background_url),
-            )
-            self.conn.commit()
+            try:
+                c.execute(
+                    """INSERT INTO pixiv_follow_member (
+                            member_id, name, member_token, avatar_url, background_url, created_date, last_sync_date
+                        ) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                        ON CONFLICT(member_id) DO UPDATE SET
+                            name = COALESCE(excluded.name, name),
+                            member_token = COALESCE(excluded.member_token, member_token),
+                            avatar_url = COALESCE(excluded.avatar_url, avatar_url),
+                            background_url = COALESCE(excluded.background_url, background_url),
+                            last_sync_date = datetime('now')""",
+                    (member_id, name, member_token, avatar_url, background_url),
+                )
+                self.conn.commit()
+            finally:
+                c.close()
+
+        try:
+            _with_sqlite_busy_retry(_op, conn=self.conn, retries=6, base_delay_s=0.05)
         except BaseException:
             print("Error at upsertFollowMember():", str(sys.exc_info()))
             print("failed")
             raise
-        finally:
-            c.close()
 
     def selectFollowMemberIds(self):
         try:
@@ -2152,69 +2186,82 @@ class PixivDBManager(object):
         like_count=None,
         view_count=None,
     ):
-        try:
+        image_id = int(image_id)
+        member_id = int(member_id)
+
+        def _op():
             c = self.conn.cursor()
-            c.execute(
-                """INSERT INTO pixiv_follow_image (
-                        image_id, member_id, title, caption, create_date, page_count, mode,
-                        bookmark_count, like_count, view_count, created_date, last_update_date
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-                    ON CONFLICT(image_id) DO UPDATE SET
-                        member_id = excluded.member_id,
-                        title = COALESCE(excluded.title, title),
-                        caption = COALESCE(excluded.caption, caption),
-                        create_date = COALESCE(excluded.create_date, create_date),
-                        page_count = COALESCE(excluded.page_count, page_count),
-                        mode = COALESCE(excluded.mode, mode),
-                        bookmark_count = COALESCE(excluded.bookmark_count, bookmark_count),
-                        like_count = COALESCE(excluded.like_count, like_count),
-                        view_count = COALESCE(excluded.view_count, view_count),
-                        last_update_date = datetime('now')""",
-                (
-                    int(image_id),
-                    int(member_id),
-                    title,
-                    caption,
-                    create_date,
-                    page_count,
-                    mode,
-                    bookmark_count,
-                    like_count,
-                    view_count,
-                ),
-            )
-            self.conn.commit()
+            try:
+                c.execute(
+                    """INSERT INTO pixiv_follow_image (
+                            image_id, member_id, title, caption, create_date, page_count, mode,
+                            bookmark_count, like_count, view_count, created_date, last_update_date
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                        ON CONFLICT(image_id) DO UPDATE SET
+                            member_id = excluded.member_id,
+                            title = COALESCE(excluded.title, title),
+                            caption = COALESCE(excluded.caption, caption),
+                            create_date = COALESCE(excluded.create_date, create_date),
+                            page_count = COALESCE(excluded.page_count, page_count),
+                            mode = COALESCE(excluded.mode, mode),
+                            bookmark_count = COALESCE(excluded.bookmark_count, bookmark_count),
+                            like_count = COALESCE(excluded.like_count, like_count),
+                            view_count = COALESCE(excluded.view_count, view_count),
+                            last_update_date = datetime('now')""",
+                    (
+                        image_id,
+                        member_id,
+                        title,
+                        caption,
+                        create_date,
+                        page_count,
+                        mode,
+                        bookmark_count,
+                        like_count,
+                        view_count,
+                    ),
+                )
+                self.conn.commit()
+            finally:
+                c.close()
+
+        try:
+            _with_sqlite_busy_retry(_op, conn=self.conn, retries=6, base_delay_s=0.05)
         except BaseException:
             print("Error at upsertFollowImage():", str(sys.exc_info()))
             print("failed")
             raise
-        finally:
-            c.close()
 
     def upsertFollowImageUrls(self, image_id, url_rows):
         """
         Upsert URL rows for an image.
         url_rows: Iterable[(image_id, page_index, original_url, regular_url)]
         """
-        try:
+        image_id = int(image_id)
+
+        def _op():
             c = self.conn.cursor()
-            c.executemany(
-                """INSERT INTO pixiv_follow_image_url (
-                        image_id, page_index, original_url, regular_url, created_date, last_update_date
-                    ) VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
-                    ON CONFLICT(image_id, page_index) DO UPDATE SET
-                        original_url = excluded.original_url,
-                        regular_url = excluded.regular_url,
-                        last_update_date = datetime('now')""",
-                url_rows,
-            )
-            self.conn.commit()
+            try:
+                c.executemany(
+                    """INSERT INTO pixiv_follow_image_url (
+                            image_id, page_index, original_url, regular_url, created_date, last_update_date
+                        ) VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
+                        ON CONFLICT(image_id, page_index) DO UPDATE SET
+                            original_url = excluded.original_url,
+                            regular_url = excluded.regular_url,
+                            last_update_date = datetime('now')""",
+                    url_rows,
+                )
+                self.conn.commit()
+            finally:
+                c.close()
+
+        try:
+            _with_sqlite_busy_retry(_op, conn=self.conn, retries=6, base_delay_s=0.05)
         except BaseException:
             print("Error at upsertFollowImageUrls():", str(sys.exc_info()))
             print("failed")
             raise
-        finally:
-            c.close()
 
     def selectFollowImages(self, member_id, offset=0, limit=50):
         try:
@@ -2316,47 +2363,59 @@ class PixivDBManager(object):
             c.close()
 
     def deleteFollowImage(self, image_id):
-        try:
+        image_id = int(image_id)
+
+        def _op():
             c = self.conn.cursor()
-            c.execute(
-                """DELETE FROM pixiv_follow_image_url WHERE image_id = ?""",
-                (int(image_id),),
-            )
-            c.execute(
-                """DELETE FROM pixiv_follow_image WHERE image_id = ?""",
-                (int(image_id),),
-            )
-            self.conn.commit()
+            try:
+                c.execute(
+                    """DELETE FROM pixiv_follow_image_url WHERE image_id = ?""",
+                    (image_id,),
+                )
+                c.execute(
+                    """DELETE FROM pixiv_follow_image WHERE image_id = ?""",
+                    (image_id,),
+                )
+                self.conn.commit()
+            finally:
+                c.close()
+
+        try:
+            _with_sqlite_busy_retry(_op, conn=self.conn, retries=6, base_delay_s=0.05)
         except BaseException:
             print("Error at deleteFollowImage():", str(sys.exc_info()))
             print("failed")
             raise
-        finally:
-            c.close()
 
     def deleteFollowMemberCascade(self, member_id):
-        try:
+        member_id = int(member_id)
+
+        def _op():
             c = self.conn.cursor()
-            c.execute(
-                """DELETE FROM pixiv_follow_image_url
-                        WHERE image_id IN (SELECT image_id FROM pixiv_follow_image WHERE member_id = ?)""",
-                (int(member_id),),
-            )
-            c.execute(
-                """DELETE FROM pixiv_follow_image WHERE member_id = ?""",
-                (int(member_id),),
-            )
-            c.execute(
-                """DELETE FROM pixiv_follow_member WHERE member_id = ?""",
-                (int(member_id),),
-            )
-            self.conn.commit()
+            try:
+                c.execute(
+                    """DELETE FROM pixiv_follow_image_url
+                            WHERE image_id IN (SELECT image_id FROM pixiv_follow_image WHERE member_id = ?)""",
+                    (member_id,),
+                )
+                c.execute(
+                    """DELETE FROM pixiv_follow_image WHERE member_id = ?""",
+                    (member_id,),
+                )
+                c.execute(
+                    """DELETE FROM pixiv_follow_member WHERE member_id = ?""",
+                    (member_id,),
+                )
+                self.conn.commit()
+            finally:
+                c.close()
+
+        try:
+            _with_sqlite_busy_retry(_op, conn=self.conn, retries=6, base_delay_s=0.05)
         except BaseException:
             print("Error at deleteFollowMemberCascade():", str(sys.exc_info()))
             print("failed")
             raise
-        finally:
-            c.close()
 
     def create_update_novel_table(self, c):
         c.execute("""CREATE TABLE IF NOT EXISTS novel_detail (

@@ -1,0 +1,220 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="grid">
+    <section class="card">
+      <h1 class="h1">多账号并发</h1>
+      <p class="muted">在网页里直接增删改账号 Token/Cookie、配置代理池、启动/停止并发抓取。默认 Worker 模式为 <code>index_urls</code>（不下载图片，只抓 URL 并写入数据库）。所有改动会自动保存并热更新到正在运行的 Runner/Worker（无需重启）。</p>
+
+      <div class="row">
+        <button class="btn btn--primary" id="btn-multi-start">启动 Runner</button>
+        <button class="btn" id="btn-multi-stop" disabled>停止 Runner</button>
+        <button class="btn" id="btn-multi-refresh">立即刷新（代理+关注）</button>
+        <span class="pill" id="multi-runner-state">idle</span>
+      </div>
+
+      <details class="details">
+        <summary>Runner 日志</summary>
+        <pre class="log" id="multi-log">(暂无)</pre>
+      </details>
+    </section>
+
+    <section class="card">
+      <h2 class="h2">运行概览</h2>
+      <p class="muted">该页面默认使用独立数据库 <code>.multi_runtime/{{ 'db.multi.sqlite' }}</code>（不与单账号模式共用），用于判断已索引/已处理，方便单独验证。</p>
+      <div class="row" style="flex-wrap: wrap;">
+        <span class="pill" id="multi-status-updated">status: -</span>
+        <span class="pill" id="multi-follow-unique">关注画师: -</span>
+        <span class="pill" id="multi-work-progress">进度: -</span>
+        <span class="pill" id="multi-db-stats">DB: -</span>
+      </div>
+      <div class="row" style="flex-wrap: wrap;">
+        <span class="pill" id="multi-db-path">db_path: -</span>
+      </div>
+      <div class="row" style="flex-wrap: wrap;">
+        <a class="btn" id="btn-multi-export-regular" href="/api/multi/export?kind=regular" target="_blank" rel="noreferrer">导出 URL（Regular，全库）</a>
+        <a class="btn" id="btn-multi-export-original" href="/api/multi/export?kind=original" target="_blank" rel="noreferrer">导出 URL（Original，全库）</a>
+        <span class="muted" style="align-self: end;">从 multi 专用数据库导出，避免与单线程 DB 混淆。</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2 class="h2">账号（Token/Cookie）</h2>
+      <div class="row">
+        <label class="label">
+          <span>账号 ID（自定义，如 acc1）</span>
+          <input class="input" id="multi-acc-id" placeholder="acc1" />
+        </label>
+        <label class="label">
+          <span>downloadDelay（每账号）</span>
+          <input class="input" id="multi-acc-delay" type="number" min="0" max="60" placeholder="8" />
+        </label>
+      </div>
+      <div class="row">
+        <label class="label">
+          <span>批量设置 downloadDelay</span>
+          <input class="input" id="multi-bulk-delay" type="number" min="0" max="60" placeholder="（留空不改）" />
+        </label>
+        <button class="btn" id="btn-multi-bulk-delay" style="align-self: end;">应用到所有账号</button>
+        <button class="btn" id="btn-multi-bulk-delay-clear" style="align-self: end;">清空所有 Delay</button>
+        <span class="pill" id="multi-bulk-status">-</span>
+      </div>
+      <div class="row">
+        <label class="label">
+          <span>Pixiv Cookie（PHPSESSID）</span>
+          <input class="input" id="multi-acc-cookie" type="password" placeholder="（download 模式必需；index_urls 可留空）" />
+        </label>
+        <label class="label">
+          <span>refresh_token（index_urls 必需）</span>
+          <input class="input" id="multi-acc-rt" type="password" placeholder="（URL 抓取用；更新可留空表示不改）" />
+        </label>
+      </div>
+      <div class="row">
+        <label class="label label--inline">
+          <input type="checkbox" id="multi-acc-clear-cookie" />
+          <span>清除该账号 Cookie</span>
+        </label>
+        <label class="label label--inline">
+          <input type="checkbox" id="multi-acc-clear-rt" />
+          <span>清除该账号 refresh_token</span>
+        </label>
+        <span class="muted">提示：清除后该账号会暂时不可用（可再次更新新 Cookie）。</span>
+      </div>
+      <div class="row">
+        <label class="label label--inline">
+          <input type="checkbox" id="multi-acc-enabled" checked />
+          <span>启用 Worker（抓取 URL/下载）</span>
+        </label>
+        <label class="label label--inline">
+          <input type="checkbox" id="multi-acc-follow-source" checked />
+          <span>作为关注源（合并关注列表）</span>
+        </label>
+        <span class="muted">提示：可将母号设置为“关注源=勾选、启用 Worker=不勾选”，由其他账号抓取 URL。</span>
+      </div>
+      <div class="row">
+        <button class="btn btn--primary" id="btn-multi-acc-save">新增/更新</button>
+        <button class="btn" id="btn-multi-acc-delete">删除账号</button>
+        <span class="pill" id="multi-acc-status">-</span>
+      </div>
+
+      <div class="table-wrap" style="margin-top: 12px;">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>账号</th>
+              <th>启用</th>
+              <th>关注源</th>
+              <th>CookieUID</th>
+              <th>Cookie</th>
+              <th>refresh_token</th>
+              <th>Delay</th>
+              <th>绑定代理</th>
+              <th>Worker</th>
+              <th>分配画师</th>
+              <th>已处理</th>
+            </tr>
+          </thead>
+          <tbody id="multi-accounts-body">
+            <tr><td colspan="11" class="muted">加载中...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2 class="h2">代理池</h2>
+      <p class="muted">支持 easy_proxies 导出（推荐）以及手工 HTTP/SOCKS 代理列表。</p>
+      <form id="multi-proxy-form" class="form">
+        <div class="row">
+          <label class="label">
+            <span>来源</span>
+            <select class="input" id="multi-proxy-source">
+              <option value="easy_proxies">easy_proxies</option>
+              <option value="static">static</option>
+              <option value="none">none</option>
+            </select>
+          </label>
+          <label class="label">
+            <span>刷新间隔（秒）</span>
+            <input class="input" id="multi-proxy-refresh" type="number" min="30" />
+          </label>
+          <label class="label">
+            <span>每代理最多绑定账号数</span>
+            <input class="input" id="multi-proxy-max-per" type="number" min="1" />
+          </label>
+        </div>
+
+        <div class="row">
+          <label class="label">
+            <span>Worker 模式</span>
+            <select class="input" id="multi-worker-mode">
+              <option value="index_urls">index_urls（不下载，只抓 URL）</option>
+              <option value="download">download（下载图片）</option>
+            </select>
+          </label>
+          <label class="label label--inline" style="align-self: end;">
+            <input type="checkbox" id="multi-proxy-strict" />
+            <span>严格容量（容量不足则部分账号无代理）</span>
+          </label>
+        </div>
+
+        <div class="row">
+          <label class="label">
+            <span>easy_proxies 管理地址</span>
+            <input class="input" id="multi-easy-base-url" placeholder="http://127.0.0.1:9090" />
+          </label>
+          <label class="label">
+            <span>easy_proxies 密码（可留空表示不改）</span>
+            <input class="input" id="multi-easy-password" type="password" placeholder="（可留空）" />
+          </label>
+        </div>
+
+        <div class="row">
+          <label class="label">
+            <span>easy_proxies host_override（可选）</span>
+            <input class="input" id="multi-easy-host-override" placeholder="（留空则用 base_url 的 host）" />
+          </label>
+          <span class="muted" style="align-self: end;">当 /api/export 返回 0.0.0.0/127.0.0.1/localhost 这类占位 host 时会自动替换。</span>
+        </div>
+
+        <div class="row">
+          <label class="label">
+            <span>测速目标 URL</span>
+            <input class="input" id="multi-proxy-test-url" placeholder="https://www.pixiv.net/robots.txt" />
+          </label>
+          <label class="label">
+            <span>测速并发</span>
+            <input class="input" id="multi-proxy-concurrency" type="number" min="1" />
+          </label>
+          <label class="label">
+            <span>测速次数</span>
+            <input class="input" id="multi-proxy-attempts" type="number" min="1" max="10" />
+          </label>
+          <label class="label">
+            <span>选择 Top N</span>
+            <input class="input" id="multi-proxy-topn" type="number" min="1" />
+          </label>
+        </div>
+
+        <div class="row">
+          <label class="label">
+            <span>手工代理列表（每行一个；支持 http:// 或 socks5://）</span>
+            <textarea class="input" id="multi-proxy-manual" rows="5" placeholder="http://user:pass@host:port&#10;socks5://host:port"></textarea>
+          </label>
+        </div>
+
+        <div class="row">
+          <button class="btn btn--primary" type="submit">保存代理配置</button>
+          <button class="btn" type="button" id="btn-multi-proxy-test">测速代理池</button>
+          <span class="pill" id="multi-proxy-status">-</span>
+          <span class="pill" id="multi-proxy-test-status">-</span>
+          <span class="pill" id="multi-proxy-warn">-</span>
+        </div>
+      </form>
+
+      <details class="details" style="margin-top: 10px;">
+        <summary>当前 Top 代理（按延迟排序）</summary>
+        <pre class="log" id="multi-proxy-top">(暂无)</pre>
+      </details>
+    </section>
+  </div>
+{% endblock %}
